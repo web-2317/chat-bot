@@ -136,35 +136,56 @@ export default async function handler(req, res) {
   res.status(200).end();
 
   const body = JSON.parse(rawBody);
+  console.log('[DEBUG] events受信数:', body.events.length);
 
   for (const event of body.events) {
     try {
+      console.log('[DEBUG] event.type:', event.type, 'message.type:', event.message?.type);
+
       // テキストメッセージ以外・グループ以外は対象外
-      if (event.type !== 'message' || event.message.type !== 'text') continue;
-      if (!event.source.groupId) continue;
+      if (event.type !== 'message' || event.message.type !== 'text') {
+        console.log('[DEBUG] テキストメッセージではないためスキップ');
+        continue;
+      }
+      if (!event.source.groupId) {
+        console.log('[DEBUG] グループ以外のsourceのためスキップ:', event.source.type);
+        continue;
+      }
 
       const groupId = event.source.groupId;
       const key = `conversation:${groupId}`;
       const text = event.message.text;
+      console.log('[DEBUG] groupId:', groupId, 'text:', text);
 
       // ① 誰の発言でも無条件でログに追記する（文脈把握のため）
       const displayName = await getDisplayName(groupId, event.source.userId);
+      console.log('[DEBUG] displayName取得完了:', displayName);
       await appendToLog(key, { role: 'user', name: displayName, content: text });
+      console.log('[DEBUG] KVへのログ追記完了');
 
       // ② メンションされていなければ、保存だけしてここで終了（OpenAIは呼ばない＝コスト0）
-      if (!isMentioned(event)) continue;
+      const mentioned = isMentioned(event);
+      console.log('[DEBUG] mention判定結果:', mentioned, 'mention生データ:', JSON.stringify(event.message.mention));
+      if (!mentioned) {
+        console.log('[DEBUG] メンションなしのため終了');
+        continue;
+      }
 
       // ③ メンションされていれば、直近の会話ログを読み込んで文脈として渡す
       const logEntries = await kv.lrange(key, 0, -1);
+      console.log('[DEBUG] ログ読み込み件数:', logEntries.length);
+
       const replyText = await callOpenAI(logEntries);
+      console.log('[DEBUG] OpenAI応答取得完了:', replyText);
 
       // ④ botの回答も次の文脈のためにログへ追記
       await appendToLog(key, { role: 'assistant', content: replyText });
 
       // ⑤ LINEへ返信
       await replyToLine(event.replyToken, replyText);
+      console.log('[DEBUG] LINEへの返信完了');
     } catch (err) {
-      console.error('イベント処理中にエラー:', err);
+      console.error('[DEBUG] イベント処理中にエラー発生:', err);
       // 1件のイベント失敗が他のイベント処理を止めないようにcontinue相当（forループなので次へ）
     }
   }
