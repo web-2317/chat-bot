@@ -85,9 +85,8 @@ async function replyToLine(replyToken, text) {
   });
 }
 
-// 保存済みの会話ログ（JSON文字列の配列）をOpenAI用のmessages形式に変換して呼び出す
-async function callOpenAI(rawLogEntries) {
-  const history = rawLogEntries.map((entry) => JSON.parse(entry));
+// 保存済みの会話ログ（@vercel/kvが自動でオブジェクトに復元済み）をOpenAI用のmessages形式に変換して呼び出す
+async function callOpenAI(history) {
 
   const messages = [
     {
