@@ -22,7 +22,6 @@ export const config = {
 
 const CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-const BOT_USER_ID = process.env.LINE_BOT_USER_ID;
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -49,9 +48,11 @@ function verifySignature(rawBody, signature) {
 }
 
 // イベントの中にbot自身へのメンションが含まれているか判定する
+// LINEはbot自身へのメンションに isSelf: true を付けてくれるので、これを使う
+// （LINE_BOT_USER_IDの入力ミスに影響されず確実）
 function isMentioned(event) {
   const mentionees = event.message?.mention?.mentionees ?? [];
-  return mentionees.some((m) => m.userId === BOT_USER_ID);
+  return mentionees.some((m) => m.isSelf === true);
 }
 
 // グループ内の発言者の表示名を取得する（失敗しても処理を止めない）
