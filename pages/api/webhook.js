@@ -132,9 +132,6 @@ export default async function handler(req, res) {
     return res.status(401).end();
   }
 
-  // LINEには先に200を返しておく（reply自体は後段でreplyTokenを使って行う）
-  res.status(200).end();
-
   const body = JSON.parse(rawBody);
   console.log('[DEBUG] events受信数:', body.events.length);
 
@@ -189,4 +186,8 @@ export default async function handler(req, res) {
       // 1件のイベント失敗が他のイベント処理を止めないようにcontinue相当（forループなので次へ）
     }
   }
+
+  // すべてのイベント処理が完了してから200を返す
+  // （Fluid Compute環境ではレスポンス送信後に処理が打ち切られるため、先に返さない）
+  res.status(200).end();
 }
