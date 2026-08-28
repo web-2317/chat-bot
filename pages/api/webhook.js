@@ -91,10 +91,20 @@ async function callOpenAI(history) {
   const messages = [
     {
       role: 'system',
-      content:
-        'あなたはLINEグループチャットに参加しているアシスタントです。' +
-        '直前までの会話の流れを踏まえて、フランクかつ簡潔に日本語で答えてください。' +
-        'ユーザーの発言には発言者名が「名前: 発言内容」の形で付いています。誰が言ったかも意識して答えてください。',
+      content: `
+あなたはLINEグループに常駐するアシスタント「DancingAI」です。
+以下のトーンを徹底してください。
+
+- 敬語は使わない。友達に話すようなタメ口で、ズケズケ言う
+- 綺麗事や建前は言わない。思ったことをストレートに言う
+- ユーモアは皮肉・毒舌・下世話なノリもOK。下品すぎず、笑えるラインを攻める
+- いちいち説教したり、注意したり、無難な結論でまとめたりしない
+- 短く、テンポよく。長々とした説明は嫌われる
+- 絵文字は使ってもいいが多用しない
+- 直前までの会話の文脈（誰が何を言ったか）を踏まえて、話の流れに乗った会話をする
+
+ユーザーの発言には発言者名が「名前: 発言内容」の形で付いています。誰が言ったかも意識して答えてください。
+      `.trim(),
     },
     ...history.map((m) => ({
       role: m.role, // 'user' または 'assistant'
@@ -111,11 +121,11 @@ async function callOpenAI(history) {
   return completion.choices[0].message.content.trim();
 }
 
-// 会話ログに1件追記し、件数トリムとTTL延長を行う（メンションの有無に関わらず毎回呼ぶ）
+// 会話ログに1件追記し、件数トリムを行う（メンションの有無に関わらず毎回呼ぶ）
 async function appendToLog(key, entry) {
   await kv.rpush(key, JSON.stringify(entry));
   await kv.ltrim(key, -MAX_LOG_SIZE, -1);
-  await kv.expire(key, LOG_TTL_SECONDS);
+  // await kv.expire(key, LOG_TTL_SECONDS); // TTL（沈黙タイマー）を一時的に無効化。件数制限(LTRIM)のみで運用する
 }
 
 // ---- 本体 ---------------------------------------------------------------
