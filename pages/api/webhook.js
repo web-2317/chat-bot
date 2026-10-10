@@ -7,6 +7,7 @@
 //   LINE_BOT_USER_ID           LINE Developers > Basic settings > Your user ID
 //   OPENAI_API_KEY             platform.openai.com で発行したAPIキー
 //   KV_REST_API_URL / KV_REST_API_TOKEN  Vercel KVを追加すると自動設定される
+//   GOOGLE_DOC_ID              （任意）システムプロンプトを書いたGoogleドキュメントのID。未設定ならコード内の既定値
 //
 // 必要なパッケージ:
 //   npm install @vercel/kv openai
@@ -27,6 +28,11 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const MAX_LOG_SIZE = 300;          // 会話ログとして保持する発言の最大件数
 /*const LOG_TTL_SECONDS = 60 * 60;*/  // 最後の発言からこの秒数、誰も発言しなければログを自動削除（沈黙タイマー）
+
+// システムプロンプトを置くGoogleドキュメント（「リンクを知っている全員」が閲覧可であること）
+const PROMPT_DOC_ID = process.env.GOOGLE_DOC_ID ?? '120EHJb0ZViMgcdCV0ceRZgs5WdD3ONyqy5wUZ717xqk';
+const PROMPT_FETCH_TIMEOUT_MS = 3000; // replyTokenの有効期限（約1分）を考慮して短めに
+const MAX_PROMPT_CHARS = 4000;        // 入力トークン（＝APIコスト）の上限として、これを超えた分は切り捨てる
 
 // ---- ユーティリティ ----------------------------------------------------
 
@@ -85,13 +91,8 @@ async function replyToLine(replyToken, text) {
   });
 }
 
-// 保存済みの会話ログ（@vercel/kvが自動でオブジェクトに復元済み）をOpenAI用のmessages形式に変換して呼び出す
-async function callOpenAI(history) {
-
-  const messages = [
-    {
-      role: 'system',
-      content: `
+// Googleドキュメントを取得できなかった時に使う既定のシステムプロンプト
+const DEFAULT_SYSTEM_PROMPT = `
 
 あなたはLINEグループに常駐するアシスタント「DancingAI」です。
 ## 会話トーン
@@ -119,10 +120,45 @@ async function callOpenAI(history) {
 mizukiという名前のメンバーのことは「クイヤ」と呼んでください。
 マイメロディという名前のメンバーのことは「マイメロ」と呼んでください。
 楢崎。という名前のメンバーのことは「奈良」と呼んでください。
+`.trim();
 
+// ロジック（ログの「名前: 発言内容」形式）に依存する注意書き。ドキュメントの内容に関わらず必ず末尾に付ける
+const FIXED_PROMPT_NOTE = `
 ## 注意
 ユーザーの発言には発言者名が「名前: 発言内容」の形で付いています。誰が言ったかも意識して答えてください。
-      `.trim(),
+`.trim();
+
+// Googleドキュメントからシステムプロンプトを取得する（失敗時は既定プロンプトを使い、返信は止めない）
+async function loadSystemPrompt() {
+  if (!PROMPT_DOC_ID) return DEFAULT_SYSTEM_PROMPT;
+  try {
+    const res = await fetch(
+      `https://docs.google.com/document/d/${PROMPT_DOC_ID}/export?format=txt`,
+      { signal: AbortSignal.timeout(PROMPT_FETCH_TIMEOUT_MS) }
+    );
+    // 非公開だとログイン画面のHTMLが返るので、content-typeでも判定する
+    const type = res.headers.get('content-type') ?? '';
+    if (!res.ok || !type.startsWith('text/plain')) {
+      throw new Error(`status=${res.status} type=${type}`);
+    }
+    const text = (await res.text()).replace(/^\uFEFF/, '').trim(); // 先頭のBOMを除去
+    if (!text) throw new Error('ドキュメントが空');
+    if (text.length > MAX_PROMPT_CHARS) {
+      console.warn('[DEBUG] プロンプトが上限超過のため切り捨て:', text.length);
+    }
+    return text.slice(0, MAX_PROMPT_CHARS);
+  } catch (err) {
+    console.error('[DEBUG] プロンプト取得失敗、既定プロンプトを使用:', err);
+    return DEFAULT_SYSTEM_PROMPT;
+  }
+}
+
+// 保存済みの会話ログ（@vercel/kvが自動でオブジェクトに復元済み）をOpenAI用のmessages形式に変換して呼び出す
+async function callOpenAI(history, systemPrompt) {
+  const messages = [
+    {
+      role: 'system',
+      content: `${systemPrompt}\n\n${FIXED_PROMPT_NOTE}`,
     },
     ...history.map((m) => ({
       role: m.role, // 'user' または 'assistant'
@@ -196,11 +232,14 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // ③ メンションされていれば、直近の会話ログを読み込んで文脈として渡す
-      const logEntries = await kv.lrange(key, 0, -1);
-      console.log('[DEBUG] ログ読み込み件数:', logEntries.length);
+      // ③ メンションされていれば、直近の会話ログと最新のシステムプロンプトを並列で読み込む
+      const [logEntries, systemPrompt] = await Promise.all([
+        kv.lrange(key, 0, -1),
+        loadSystemPrompt(),
+      ]);
+      console.log('[DEBUG] ログ読み込み件数:', logEntries.length, 'プロンプト文字数:', systemPrompt.length);
 
-      const replyText = await callOpenAI(logEntries);
+      const replyText = await callOpenAI(logEntries, systemPrompt);
       console.log('[DEBUG] OpenAI応答取得完了:', replyText);
 
       // ④ botの回答も次の文脈のためにログへ追記
@@ -218,4 +257,4 @@ export default async function handler(req, res) {
   // すべてのイベント処理が完了してから200を返す
   // （Fluid Compute環境ではレスポンス送信後に処理が打ち切られるため、先に返さない）
   res.status(200).end();
-}
+}
